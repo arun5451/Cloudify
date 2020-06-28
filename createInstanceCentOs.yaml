@@ -1,0 +1,86 @@
+tosca_definitions_version: cloudify_dsl_1_3
+imports:
+   - types.yaml
+   - plugin:cloudify-aws-plugin
+
+inputs:
+  aws_region_name:
+    default: us-east-2
+  aws_availability_zone:
+    default: us-east-2b
+  aws_subnet_id:
+    default: subnet-c6053abc
+  aws_security_group_id:
+    default: sg-06b4dc7d8876378ea
+  aws_keypair_name:
+    default: CloudifyTest
+  aws_ami_id:
+    default: ami-01e36b7901e884a10
+  aws_instance_type:
+    default: t2.micro
+
+dsl_definitions:
+  client_config: &client_config
+    aws_access_key_id: { get_secret: aws_access_key_id }
+    aws_secret_access_key: { get_secret: aws_secret_access_key }
+    region_name: { get_input: aws_region_name}
+
+node_templates:
+  host:
+    type: cloudify.nodes.aws.ec2.Instances
+    properties:
+      agent_config:
+        install_method: remote 
+        user: centos
+        key: { get_secret: aws_cloudify_private_key }
+      client_config: *client_config
+      resource_config:
+        MinCount: 1
+        MaxCount: 1
+        ImageId: { get_input: aws_ami_id }
+        InstanceType: { get_input: aws_instance_type }
+        kwargs:
+          KeyName: { get_input: aws_keypair_name }
+          SubnetId: { get_input: aws_subnet_id}
+          UserData: |
+            #!/bin/bash
+            sed 's/PasswordAuthentication no/PasswordAuthentication yes/' -i /etc/ss/sshd_config
+            systemctl restart sshd
+            service sshd restart
+            useradd cloudify
+            echo "cloudify@123" | passwd --stdin cloudify
+          SecurityGroupIds:
+          - { get_input: aws_security_group_id }
+          BlockDeviceMappings:
+          - DeviceName: '/dev/sda1'
+            Ebs:
+              DeleteOnTermination: True
+          Placement:
+            AvailabilityZone: { get_input: aws_availability_zone}
+      Tags:
+        - Key: Name
+          Value: 'CentOs-Test'
+
+  volume:
+    type: cloudify.nodes.aws.ec2.EBSVolume
+    properties:
+      device_name: '/dev/sdh'
+      resource_config:
+        AvailabilityZone: { get_input: aws_availability_zone }
+        Size: 10
+      client_config: *client_config
+
+  volume_attachment:
+    type: cloudify.nodes.aws.ec2.EBSAttachment
+    properties:
+      resource_config:
+        kwargs:
+          Device: '/dev/sdh'
+          InstanceId: { get_attribute: [ host, aws_resource_id ] }
+          VolumeId: { get_attribute: [ volume, aws_resource_id ] }
+      client_config: *client_config
+    relationships:
+      - type: cloudify.relationships.connected_to
+        target: volume
+      - type: cloudify.relationships.connected_to
+        target: host
